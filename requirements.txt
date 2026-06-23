@@ -1,1 +1,17 @@
 
+
+google-adk
+google-generativeai
+networkx
+xgboost
+scikit-learn
+pandas
+numpy
+geopandas
+shapely
+fastapi
+uvicorn
+python-dotenv
+mcp
+opentelemetry-api
+opentelemetry-sdk
