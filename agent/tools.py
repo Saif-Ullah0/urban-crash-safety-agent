@@ -13,7 +13,7 @@ import pandas as pd
 from google.adk.tools import FunctionTool
 
 
-# ─── Crash Risk Scoring Tool ───────────────────────────────────────────────
+# ─── Crash Risk Scoring Tool ───
 
 def score_crash_risk(latitude: float, longitude: float) -> dict:
     """
@@ -73,7 +73,7 @@ def score_crash_risk(latitude: float, longitude: float) -> dict:
     }
 
 
-# ─── Safe Route Finding Tool ────────────────────────────────────────────────
+# ─── Safe Route Finding Tool 
 
 def find_safe_route(
     origin: str,
@@ -155,7 +155,7 @@ def find_safe_route(
     }
 
 
-# ─── Register as ADK FunctionTools ─────────────────────────────────────────
+# ─── Register as ADK FunctionTools 
 
 crash_risk_tool = FunctionTool(score_crash_risk)
 safe_route_tool = FunctionTool(find_safe_route)

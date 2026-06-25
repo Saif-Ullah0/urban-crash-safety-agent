@@ -16,11 +16,11 @@ from agent.tools import crash_risk_tool, safe_route_tool
 
 load_dotenv()
 
-# ─── Agent Definition ───────────────────────────────────────────────────────
+# ─── Agent Definition ───────
 
 crash_safety_agent = Agent(
     name="urban_crash_safety_agent",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",    
     description=(
         "An AI agent that helps users navigate NYC safely by analyzing "
         "crash risk along routes and recommending the safest path."
@@ -52,7 +52,7 @@ crash_safety_agent = Agent(
 )
 
 
-# ─── Session and Runner Setup ───────────────────────────────────────────────
+# ─── Session and Runner Setup ───
 
 session_service = InMemorySessionService()
 
@@ -63,7 +63,7 @@ runner = Runner(
 )
 
 
-# ─── Human-in-the-Loop Check ───────────────────────────────────────────────
+# ─── Human-in-the-Loop Check ───
 
 def check_human_review(response: dict) -> bool:
     """
@@ -75,7 +75,7 @@ def check_human_review(response: dict) -> bool:
     return False
 
 
-# ─── Main Conversation Loop ─────────────────────────────────────────────────
+# ─── Main Conversation Loop ─
 
 async def run_agent(user_message: str, session_id: str = "default") -> str:
     """
@@ -89,6 +89,20 @@ async def run_agent(user_message: str, session_id: str = "default") -> str:
     Returns:
         Agent's response as a string
     """
+    # Create session if it doesn't exist yet
+    existing_sessions = await session_service.list_sessions(
+        app_name="urban_crash_safety_agent",
+        user_id="user_001",
+    )
+    session_ids = [s.id for s in existing_sessions.sessions]
+    
+    if session_id not in session_ids:
+        await session_service.create_session(
+            app_name="urban_crash_safety_agent",
+            user_id="user_001",
+            session_id=session_id,
+        )
+
     content = types.Content(
         role="user",
         parts=[types.Part(text=user_message)]
@@ -107,8 +121,7 @@ async def run_agent(user_message: str, session_id: str = "default") -> str:
 
     return final_response
 
-
-# ─── CLI Entry Point ────────────────────────────────────────────────────────
+# ─── CLI Entry Point ────────
 
 if __name__ == "__main__":
     import asyncio
