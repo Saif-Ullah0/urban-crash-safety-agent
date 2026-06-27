@@ -1,149 +1,221 @@
-
 """
 Urban Crash Safety Agent - Main Agent
-ADK-powered conversational agent for safe route recommendations
-in NYC using crash risk scoring and NetworkX routing.
+Conversational agent for safe route recommendations in NYC
+using crash risk scoring and NetworkX routing.
+Powered by Groq (Llama 3.3 70B) for fast, free inference.
 """
 
 import os
+import json
 from dotenv import load_dotenv
-from google.adk.agents import Agent
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.genai import types
+from groq import Groq
 
-from agent.tools import crash_risk_tool, safe_route_tool
+from agent.tools import score_crash_risk, find_safe_route
 
 load_dotenv()
 
-# ─── Agent Definition ───────
+# ─── Groq Client Setup ──
 
-crash_safety_agent = Agent(
-    name="urban_crash_safety_agent",
-    model="gemini-2.5-flash",    
-    description=(
-        "An AI agent that helps users navigate NYC safely by analyzing "
-        "crash risk along routes and recommending the safest path."
-    ),
-    instruction="""
-    You are the Urban Crash Safety Agent, an expert in NYC road safety.
-    
-    Your job is to help users find the safest routes in New York City
-    by analyzing historical crash data and scoring risk along their path.
-    
-    When a user asks about a route:
-    1. Use the find_safe_route tool to get route options and risk scores
-    2. Use the score_crash_risk tool if they ask about a specific location
-    3. If the route has HIGH risk (needs_human_review = True), ALWAYS warn
-       the user clearly and ask them to confirm before proceeding
-    4. Explain your recommendations in plain, simple language
-    5. Always mention the risk score and what it means
-    
-    You care deeply about user safety. Never recommend a high-risk route
-    without a clear warning and user confirmation. This is your most
-    important rule.
-    
-    Example interactions:
-    - "What is the safest route from Times Square to Brooklyn Bridge?"
-    - "Is it safe to drive through Midtown at night?"
-    - "What is the crash risk near Central Park?"
-    """,
-    tools=[crash_risk_tool, safe_route_tool],
-)
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
+# ─── Tool Definitions for Groq ───────
 
-# ─── Session and Runner Setup ───
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "find_safe_route",
+            "description": (
+                "Finds the safest driving route between two NYC locations. "
+                "Returns waypoints, risk scores, and flags high-risk routes "
+                "for human review before proceeding."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {
+                        "type": "string",
+                        "description": "Starting location in NYC"
+                    },
+                    "destination": {
+                        "type": "string",
+                        "description": "Ending location in NYC"
+                    }
+                },
+                "required": ["origin", "destination"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "score_crash_risk",
+            "description": (
+                "Scores the crash risk at a GPS coordinate in NYC. "
+                "Uses XGBoost model trained on 500,000+ collision records. "
+                "Returns risk score 0-1, risk level, and explanation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "latitude": {
+                        "type": "number",
+                        "description": "GPS latitude"
+                    },
+                    "longitude": {
+                        "type": "number",
+                        "description": "GPS longitude"
+                    }
+                },
+                "required": ["latitude", "longitude"]
+            }
+        }
+    }
+]
 
-session_service = InMemorySessionService()
+# ─── System Prompt ──────
 
-runner = Runner(
-    agent=crash_safety_agent,
-    app_name="urban_crash_safety_agent",
-    session_service=session_service,
-)
+SYSTEM_PROMPT = """
+You are the Urban Crash Safety Agent, an expert in NYC road safety.
 
+Your job is to help users find the safest routes in New York City
+by analyzing historical crash data and scoring risk along their path.
 
-# ─── Human-in-the-Loop Check ───
+When a user asks about a route:
+1. Use the find_safe_route tool to get route options and risk scores
+2. Use score_crash_risk if they ask about a specific location
+3. If the route has HIGH risk (needs_human_review = True), ALWAYS warn
+   the user clearly and ask them to confirm before proceeding
+4. Explain your recommendations in plain, simple language
+5. Always mention the risk score and what it means
 
-def check_human_review(response: dict) -> bool:
+You care deeply about user safety. Never recommend a high-risk route
+without a clear warning and user confirmation.
+"""
+
+# ─── Tool Dispatcher ────
+
+def dispatch_tool(tool_name: str, tool_args: dict) -> str:
     """
-    Checks if agent response contains a high risk route
-    that needs human confirmation before proceeding.
+    Calls the appropriate tool function and returns result as JSON string.
+    This is the human-in-the-loop checkpoint: high risk routes
+    are flagged in the tool result, and the agent surfaces them to the user.
     """
-    if isinstance(response, dict):
-        return response.get("needs_human_review", False)
-    return False
+    if tool_name == "find_safe_route":
+        result = find_safe_route(**tool_args)
+    elif tool_name == "score_crash_risk":
+        result = score_crash_risk(**tool_args)
+    else:
+        result = {"error": f"Unknown tool: {tool_name}"}
+
+    return json.dumps(result, indent=2)
 
 
-# ─── Main Conversation Loop ─
+# ─── Agent Runner ─
 
-async def run_agent(user_message: str, session_id: str = "default") -> str:
+def run_agent(user_message: str, conversation_history: list) -> tuple[str, list]:
     """
-    Runs the agent with a user message and returns its response.
-    Implements human-in-the-loop for high risk routes.
-    
+    Runs one turn of the agent conversation.
+    Handles tool calls automatically and returns the final response.
+
     Args:
-        user_message: The user's question or request
-        session_id: Conversation session ID for context memory
-    
+        user_message: The user's input
+        conversation_history: Full conversation so far (for session memory)
+
     Returns:
-        Agent's response as a string
+        Tuple of (agent_response, updated_history)
     """
-    # Create session if it doesn't exist yet
-    existing_sessions = await session_service.list_sessions(
-        app_name="urban_crash_safety_agent",
-        user_id="user_001",
+    # Add user message to history
+    conversation_history.append({
+        "role": "user",
+        "content": user_message
+    })
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
+
+    # First call: agent decides what to do
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        tools=TOOLS,
+        tool_choice="auto",
+        max_tokens=2048,
     )
-    session_ids = [s.id for s in existing_sessions.sessions]
-    
-    if session_id not in session_ids:
-        await session_service.create_session(
-            app_name="urban_crash_safety_agent",
-            user_id="user_001",
-            session_id=session_id,
+
+    response_message = response.choices[0].message
+
+    # If agent wants to call tools, handle them
+    if response_message.tool_calls:
+        # Add agent's tool-calling message to history
+        conversation_history.append({
+            "role": "assistant",
+            "content": response_message.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                }
+                for tc in response_message.tool_calls
+            ]
+        })
+
+        # Call each tool and collect results
+        for tool_call in response_message.tool_calls:
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments)
+            tool_result = dispatch_tool(tool_name, tool_args)
+
+            conversation_history.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": tool_result
+            })
+
+        # Second call: agent formulates final response using tool results
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
+        final_response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            max_tokens=2048,
         )
+        final_text = final_response.choices[0].message.content
 
-    content = types.Content(
-        role="user",
-        parts=[types.Part(text=user_message)]
-    )
+    else:
+        # No tool calls needed, direct response
+        final_text = response_message.content
 
-    final_response = ""
+    # Add agent response to history
+    conversation_history.append({
+        "role": "assistant",
+        "content": final_text
+    })
 
-    async for event in runner.run_async(
-        user_id="user_001",
-        session_id=session_id,
-        new_message=content,
-    ):
-        if event.is_final_response():
-            if event.content and event.content.parts:
-                final_response = event.content.parts[0].text
+    return final_text, conversation_history
 
-    return final_response
 
-# ─── CLI Entry Point ────────
+# ─── CLI Entry Point ─────
 
 if __name__ == "__main__":
-    import asyncio
-
     print("Urban Crash Safety Agent")
     print("=" * 40)
+    print("Powered by Groq (Llama 3.3 70B)")
     print("Ask me about safe routes in NYC.")
     print("Type 'quit' to exit.\n")
 
-    session_id = "cli_session_001"
+    conversation_history = []
 
-    async def main():
-        while True:
-            user_input = input("You: ").strip()
-            if user_input.lower() in ["quit", "exit"]:
-                print("Stay safe out there!")
-                break
-            if not user_input:
-                continue
+    while True:
+        user_input = input("You: ").strip()
+        if user_input.lower() in ["quit", "exit"]:
+            print("Stay safe out there!")
+            break
+        if not user_input:
+            continue
 
-            print("Agent: thinking...")
-            response = await run_agent(user_input, session_id)
-            print(f"Agent: {response}\n")
-
-    asyncio.run(main())
+        print("Agent: thinking...")
+        response, conversation_history = run_agent(user_input, conversation_history)
+        print(f"Agent: {response}\n")
