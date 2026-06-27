@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent.tools import score_crash_risk, find_safe_route
 
 
-# ─── Crash Risk Scoring Tests ─────────────
+# ─── Crash Risk Scoring Tests 
 
 def test_score_crash_risk_returns_valid_structure():
     """Result must have all required keys."""
@@ -36,7 +36,7 @@ def test_score_crash_risk_level_valid():
     print(f"PASS: risk_level '{result['risk_level']}' is valid")
 
 
-# ─── Safe Route Finding Tests ──────────────
+# ─── Safe Route Finding Tests ─
 
 def test_find_safe_route_returns_valid_structure():
     """Route result must have all required keys."""
